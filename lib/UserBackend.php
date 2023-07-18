@@ -94,36 +94,36 @@ class UserBackend implements \OCP\IUserBackend, \OCP\UserInterface, \OCP\User\Ba
 		return $wasUserDeleted;
 	}
 
-	public function getUsers($searchString = '', $limit = null, $offset = null) {
-		// If the search string contains % or _ these would be interpreted as
-		// wildcards in the LIKE expression. Therefore they will be escaped.
-		$searchString = $this->escapePercentAndUnderscore($searchString);
+        public function getUsers($searchString = '', $limit = null, $offset = null, $wildcard = true) {
+                // If the search string contains % or _ these would be interpreted as
+                // wildcards in the LIKE expression. Therefore they will be escaped.
+                $searchString = $this->escapePercentAndUnderscore($searchString);
 
-		$queryFromConfig = $this->config->getQueryGetUsers();
-		isset($limit) ? $limitSegment = ' LIMIT :limit' : $limitSegment = '';
-		isset($offset) ? $offsetSegment = ' OFFSET :offset' : $offsetSegment = '';
-		$finalQuery = $queryFromConfig . $limitSegment . $offsetSegment;
+                $queryFromConfig = $this->config->getQueryGetUsers();
+                isset($limit) ? $limitSegment = ' LIMIT :limit' : $limitSegment = '';
+                isset($offset) ? $offsetSegment = ' OFFSET :offset' : $offsetSegment = '';
+                $finalQuery = $queryFromConfig . $limitSegment . $offsetSegment;
 
-		$statement = $this->db->getDbHandle()->prepare($finalQuery);
+                $statement = $this->db->getDbHandle()->prepare($finalQuery);
 
-		// Because MariaDB can not handle string parameters for LIMIT/OFFSET we have to bind the
-		// values "manually" instead of passing an array to execute(). This is another instance of
-		// MariaDB making the code "uglier".
-		$statement->bindValue(':search', '%' . $searchString . '%', \PDO::PARAM_STR);
-		if (isset($limit)) {
-			$statement->bindValue(':limit', intval($limit), \PDO::PARAM_INT);
-		}
-		if (isset($offset))  {
-			$statement->bindValue(':offset', intval($offset), \PDO::PARAM_INT);
-		}
-		$statement->execute();
+                // Because MariaDB can not handle string parameters for LIMIT/OFFSET we have to bind the
+                // values "manually" instead of passing an array to execute(). This is another instance of
+                // MariaDB making the code "uglier".
+                $statement->bindValue(':search', ($wildcard ? '%' : '') . $searchString . ($wildcard ? '%' : ''), \PDO::PARAM_STR);
+                if (isset($limit)) {
+                        $statement->bindValue(':limit', intval($limit), \PDO::PARAM_INT);
+                }
+                if (isset($offset))  {
+                        $statement->bindValue(':offset', intval($offset), \PDO::PARAM_INT);
+                }
+                $statement->execute();
 
-		// Setting the second parameter to 0 will ensure, that only the first
-		// column is returned.
-		$matchedUsers = $statement->fetchAll(\PDO::FETCH_COLUMN, 0);
-		return $matchedUsers;
+                // Setting the second parameter to 0 will ensure, that only the first
+                // column is returned.
+                $matchedUsers = $statement->fetchAll(\PDO::FETCH_COLUMN, 0);
+                return $matchedUsers;
 
-	}
+        }
 
 	public function userExists($providedUsername) {
 		$statement = $this->db->getDbHandle()->prepare($this->config->getQueryUserExists());
@@ -140,7 +140,7 @@ class UserBackend implements \OCP\IUserBackend, \OCP\UserInterface, \OCP\User\Ba
 	}
 
 	public function getDisplayNames($search = '', $limit = null, $offset = null) {
-		$matchedUsers = $this->getUsers($search, $limit, $offset);
+		$matchedUsers = $this->getUsers($search, $limit, $offset, true);
 		$displayNames = array();
 		foreach ($matchedUsers as $matchedUser) {
 			$displayNames[$matchedUser] = $this->getDisplayName($matchedUser);
@@ -387,7 +387,7 @@ class UserBackend implements \OCP\IUserBackend, \OCP\UserInterface, \OCP\User\Ba
 			throw new \RuntimeException($uid . ' does not exist');
 		}
 
-		$realUID = $this->getUsers($uid, 1);
+		$realUID = $this->getUsers($uid, 1, null, false);
 		return array_pop($realUID);
 	}
 }
