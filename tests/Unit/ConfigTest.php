@@ -26,298 +26,276 @@ use OCP\IConfig;
 use PHPUnit\Framework\TestCase;
 use Psr\Log\LoggerInterface;
 
+final class ConfigTest extends TestCase
+{
+    private $logStub;
+    private $nextcloudConfigStub;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->logStub = $this->createMock(LoggerInterface::class);
+        $this->nextcloudConfigStub = $this->createMock(IConfig::class);
+    }
+
+    // Test that check whether exceptions are thrown if mandatory parameters are
+    // missing
+
+    public function testThrowsExceptionIfUserBackendSqlRawKeyIsNotSet()
+    {
+        $this->nextcloudConfigStub->method('getSystemValue')
+            ->willReturn(array());
+
+        $this->expectException(\UnexpectedValueException::class);
+        new Config($this->logStub, $this->nextcloudConfigStub);
+    }
+
+    public function testThrowsExceptionIfMandatorySettingIsNotSet()
+    {
+        $this->nextcloudConfigStub->method('getSystemValue')
+            ->willReturn(array(
+                'the_configuration_is_not_empty' => 'but also contains no usable keys',
+            ));
+
+        $this->expectException(\UnexpectedValueException::class);
+        $config = new Config($this->logStub, $this->nextcloudConfigStub);
+        $config->getDsn();
+    }
+
+    public function testThrowsExceptionIfMandatorySettingIsEmpty()
+    {
+        $this->nextcloudConfigStub->method('getSystemValue')
+            ->willReturn(array(
+                'dsn' => '',
+            ));
+
+        $this->expectException(\UnexpectedValueException::class);
+        $config = new Config($this->logStub, $this->nextcloudConfigStub);
+        $config->getDsn();
+    }
+
+    public function testDefaultHashAlgorithmForNewPasswordsIsUsedWhenThisParameterIsNotSet()
+    {
+        $this->nextcloudConfigStub->method('getSystemValue')
+            ->willReturn(array(
+                'the_configuration_is_not_empty' => 'but also contains no usable keys',
+            ));
+
+        $config = new Config($this->logStub, $this->nextcloudConfigStub);
+
+        $expectedCharset = Config::DEFAULT_HASH_ALGORITHM_FOR_NEW_PASSWORDS;
+        $actualCharset = $config->getHashAlgorithmForNewPasswords();
+        self::assertEquals($expectedCharset, $actualCharset);
+    }
+
+    public function testEmptyQueryParameterReturnsFalse()
+    {
+        $this->nextcloudConfigStub->method('getSystemValue')
+            ->willReturn(array(
+                'queries' => array(
+                    'get_users' => '',
+                ),
+            ));
+
+        $config = new Config($this->logStub, $this->nextcloudConfigStub);
+
+        $actualReturnValue = $config->getQueryGetUsers();
+        self::assertSame(false, $actualReturnValue);
+    }
+
+    // Tests that check if actual (non-default) values are returned
+
+    public function testDsnIsReturnedWhenThisParameterIsSet()
+    {
+        $this->nextcloudConfigStub->method('getSystemValue')
+            ->willReturn(array(
+                'dsn' => 'pgsql:host=/var/run/postgresql;dbname=theName_OfYourUserDb',
+            ));
+
+        $config = new Config($this->logStub, $this->nextcloudConfigStub);
+
+        $expectedDsn = 'pgsql:host=/var/run/postgresql;dbname=theName_OfYourUserDb';
+        $actualDsn = $config->getDsn();
+        self::assertEquals($expectedDsn, $actualDsn);
+    }
+
+    public function testPasswordIsReturnedWhenThisParameterIsSet()
+    {
+        $expectedPassword = '!I_am V-e rySecr3t9!&äßZ';
+        $this->nextcloudConfigStub->method('getSystemValue')
+            ->willReturn(array(
+                'db_password' => $expectedPassword,
+            ));
+
+        $config = new Config($this->logStub, $this->nextcloudConfigStub);
 
-final class ConfigTest extends TestCase {
-
-	private $logStub;
-	private $nextcloudConfigStub;
-
-	protected function setUp(): void {
-		parent::setUp();
-		$this->logStub = $this->createMock(LoggerInterface::class);
-		$this->nextcloudConfigStub = $this->createMock(IConfig::class);
-	}
-
-
-	// Test that check whether exceptions are thrown if mandatory parameters are
-	// missing
-
-	public function testThrowsExceptionIfUserBackendSqlRawKeyIsNotSet() {
-		$this->nextcloudConfigStub->method('getSystemValue')
-			->willReturn(array());
-
-		$this->expectException(\UnexpectedValueException::class);
-		new Config($this->logStub, $this->nextcloudConfigStub);
-	}
-
-	public function testThrowsExceptionIfMandatorySettingIsNotSet() {
-		$this->nextcloudConfigStub->method('getSystemValue')
-			->willReturn(array(
-				'the_configuration_is_not_empty' => 'but also contains no usable keys'
-			));
-
-		$this->expectException(\UnexpectedValueException::class);
-		$config = new Config($this->logStub, $this->nextcloudConfigStub);
-		$config->getDbName();
-	}
-
-	public function testThrowsExceptionIfMandatorySettingIsEmpty() {
-		$this->nextcloudConfigStub->method('getSystemValue')
-			->willReturn(array(
-				'db_name' => ''
-			));
-
-		$this->expectException(\UnexpectedValueException::class);
-		$config = new Config($this->logStub, $this->nextcloudConfigStub);
-		$config->getDbName();
-	}
-
-	// Tests that check if default values are uses correctly
-
-	public function testDefaultDbTypeIsUsedWhenThatParameterIsNotSet() {
-		$this->nextcloudConfigStub->method('getSystemValue')
-			->willReturn(array(
-				'the_configuration_is_not_empty' => 'but also contains no usable keys'
-			));
-
-		$config = new Config($this->logStub, $this->nextcloudConfigStub);
-
-		$expectedDbType = Config::DEFAULT_DB_TYPE;
-		$actualDbType = $config->getDbType();
-		self::assertEquals($expectedDbType, $actualDbType);
-	}
-
-	public function testDefaultHostIsUsedWhenThisParameterIsNotSet() {
-		$this->nextcloudConfigStub->method('getSystemValue')
-			->willReturn(array(
-				'the_configuration_is_not_empty' => 'but also contains no usable keys'
-			));
-
-		$config = new Config($this->logStub, $this->nextcloudConfigStub);
-
-		$expectedHost = Config::DEFAULT_DB_HOST;
-		$actualHost = $config->getDbHost();
-		self::assertEquals($expectedHost, $actualHost);
-	}
-
-	public function testDefaultPostgresqlPortIsUsedWhenThisParameterIsNotSet() {
-		$this->nextcloudConfigStub->method('getSystemValue')
-			->willReturn(array(
-				'the_configuration_is_not_empty' => 'but also contains no usable keys'
-			));
-
-		$config = new Config($this->logStub, $this->nextcloudConfigStub);
-
-		$expectedPort = Config::DEFAULT_POSTGRESQL_PORT;
-		$actualPort = $config->getDbPort();
-		self::assertEquals($expectedPort, $actualPort);
-	}
-
-	public function testDefaultMariaPortIsUsedWhenThisParameterIsNotSet() {
-		$this->nextcloudConfigStub->method('getSystemValue')
-			->willReturn(array(
-				'db_type' => 'mariadb'
-			));
-
-		$config = new Config($this->logStub, $this->nextcloudConfigStub);
-
-		$expectedPort = Config::DEFAULT_MARIADB_PORT;
-		$actualPort = $config->getDbPort();
-		self::assertEquals($expectedPort, $actualPort);
-	}
-
-	public function testDefaultMariadbCharsetIsUsedWhenThisParameterIsNotSet() {
-		$this->nextcloudConfigStub->method('getSystemValue')
-			->willReturn(array(
-				'the_configuration_is_not_empty' => 'but also contains no usable keys'
-			));
-
-		$config = new Config($this->logStub, $this->nextcloudConfigStub);
-
-		$expectedCharset = Config::DEFAULT_MARIADB_CHARSET;
-		$actualCharset = $config->getMariadbCharset();
-		self::assertEquals($expectedCharset, $actualCharset);
-	}
-
-	public function testDefaultHashAlgorithmForNewPasswordsIsUsedWhenThisParameterIsNotSet() {
-		$this->nextcloudConfigStub->method('getSystemValue')
-			->willReturn(array(
-				'the_configuration_is_not_empty' => 'but also contains no usable keys'
-			));
-
-		$config = new Config($this->logStub, $this->nextcloudConfigStub);
-
-		$expectedCharset = Config::DEFAULT_HASH_ALGORITHM_FOR_NEW_PASSWORDS;
-		$actualCharset = $config->getHashAlgorithmForNewPasswords();
-		self::assertEquals($expectedCharset, $actualCharset);
-	}
-
-	public function testEmptyQueryParameterReturnsFalse() {
-		$this->nextcloudConfigStub->method('getSystemValue')
-			->willReturn(array(
-				'queries' => array(
-					'get_users' => ''
-				)
-			));
-
-		$config = new Config($this->logStub, $this->nextcloudConfigStub);
-
-		$actualReturnValue = $config->getQueryUserExists();
-		self::assertSame(FALSE, $actualReturnValue);
-	}
-
-	// Tests that check if actual (non-default) values are returned
-
-	public function testDbTypeIsReturnedWhenThisParameterIsSet() {
-		$this->nextcloudConfigStub->method('getSystemValue')
-			->willReturn(array(
-				'db_type' => 'mariadb'
-			));
-
-		$config = new Config($this->logStub, $this->nextcloudConfigStub);
-
-		$expectedDbType = 'mariadb';
-		$actualDbType = $config->getDbType();
-		self::assertEquals($expectedDbType, $actualDbType);
-	}
-
-	public function testDbHostDomainNameIsReturnedWhenThisParameterIsSet() {
-		$this->nextcloudConfigStub->method('getSystemValue')
-			->willReturn(array(
-				'db_host' => 'nextcloud.mycompany.com'
-			));
-
-		$config = new Config($this->logStub, $this->nextcloudConfigStub);
-
-		$expectedHost = 'nextcloud.mycompany.com';
-		$actualHost = $config->getDbHost();
-		self::assertEquals($expectedHost, $actualHost);
-	}
-
-	public function testDbHostIpIsReturnedWhenThisParameterIsSet() {
-		$this->nextcloudConfigStub->method('getSystemValue')
-			->willReturn(array(
-				'db_host' => '43.100.4.0'
-			));
-
-		$config = new Config($this->logStub, $this->nextcloudConfigStub);
-
-		$expectedHost = '43.100.4.0';
-		$actualHost = $config->getDbHost();
-		self::assertEquals($expectedHost, $actualHost);
-	}
-
-	public function testDbPortIsReturnedWhenThisParameterIsSet() {
-		$this->nextcloudConfigStub->method('getSystemValue')
-			->willReturn(array(
-				'db_port' => '54321'
-			));
-
-		$config = new Config($this->logStub, $this->nextcloudConfigStub);
-
-		$expectedPort = '54321';
-		$actualPort = $config->getDbPort();
-		self::assertEquals($expectedPort, $actualPort);
-	}
-
-	public function testMariaDbCharsetIsReturnedWhenThisParameterIsSet() {
-		$this->nextcloudConfigStub->method('getSystemValue')
-			->willReturn(array(
-				'mariadb_charset' => 'latin2_czech_cs'
-			));
-
-		$config = new Config($this->logStub, $this->nextcloudConfigStub);
-
-		$expectedCharset = 'latin2_czech_cs';
-		$actualCharset = $config->getMariadbCharset();
-		self::assertEquals($expectedCharset, $actualCharset);
-	}
-
-	public function testHashAlgorithmForNewPasswordsIsReturnedWhenThisParameterIsSet() {
-		$this->nextcloudConfigStub->method('getSystemValue')
-			->willReturn(array(
-				'hash_algorithm_for_new_passwords' => 'SHA-512'
-			));
-
-		$config = new Config($this->logStub, $this->nextcloudConfigStub);
-
-		$expectedHashAlgorithm = 'sha512';
-		$actualHashAlgorithm = $config->getHashAlgorithmForNewPasswords();
-		self::assertEquals($expectedHashAlgorithm, $actualHashAlgorithm);
-	}
-
-	public function testQueryIsReturnedWhenItIsSet() {
-		$this->nextcloudConfigStub->method('getSystemValue')
-			->willReturn(array(
-				'queries' => array(
-					'set_password_hash_for_user' => 'UPDATE virtual_users SET password_hash = :new_password_hash WHERE local = split_part(:username, \'@\', 1) AND domain = split_part(:username, \'@\', 2)'
-				)
-			));
-
-		$config = new Config($this->logStub, $this->nextcloudConfigStub);
-
-		$expectedQuery = 'UPDATE virtual_users SET password_hash = :new_password_hash WHERE local = split_part(:username, \'@\', 1) AND domain = split_part(:username, \'@\', 2)';
-		$actualReturnValue = $config->getQuerySetPasswordForUser();
-		self::assertEquals($expectedQuery, $actualReturnValue);
-	}
-
-
-	// Test that check whether invalid values four countable types are
-	// recognized
-
-	public function testExceptionIsThrownForUnsupportedHashAlgorithmForNewPasswords() {
-		$this->nextcloudConfigStub->method('getSystemValue')
-			->willReturn(array(
-				'hash_algorithm_for_new_passwords' => 'des-3'
-			));
-
-		$this->expectException(\UnexpectedValueException::class);
-		$config = new Config($this->logStub, $this->nextcloudConfigStub);
-		$config->getDbPassword();
-	}
-
-	public function testExceptionIsThrownForUnsupportedDbType() {
-		$this->nextcloudConfigStub->method('getSystemValue')
-			->willReturn(array(
-				'db_type' => 'oracle'
-			));
-
-		$this->expectException(\UnexpectedValueException::class);
-		$config = new Config($this->logStub, $this->nextcloudConfigStub);
-		$config->getDbType();
-	}
-
-	// Test that checks if multiple parameters are recognized simultaneously.
-	// Previous tests only tested single parameters.
-	public function testMultipleParametersAreRecognizedSimultaneously() {
-		// db_type will be left empty to test default value
-		$this->nextcloudConfigStub->method('getSystemValue')
-			->willReturn(array(
-				'db_type' => '',
-				'db_port' => '4567',
-				'db_user' => 'JohnDoe',
-				'db_password' => 'bpd_N(z6%aT&$<Km',
-				'db_host' => 'db.cluster.de',
-				'queries' =>
-					array(
-						'user_exists' => 'SELECT EXISTS(SELECT 1 FROM virtual_users_fqda WHERE fqda = :username)',
-						'create_user' => 'INSERT INTO virtual_users (local, domain, password_hash) VALUES (split_part(:username, \'@\', 1), split_part(:username, \'@\', 2), :password_hash)',
-					),
-				'hash_algorithm_for_new_passwords' => 'argon2i',
-			));
-
-		$config = new Config($this->logStub, $this->nextcloudConfigStub);
-
-		self::assertEquals('postgresql', $config->getDbType());
-		self::assertEquals('4567', $config->getDbPort());
-		self::assertEquals('JohnDoe', $config->getDbUser());
-		self::assertEquals('bpd_N(z6%aT&$<Km', $config->getDbPassword());
-		self::assertEquals('db.cluster.de', $config->getDbHost());
-		self::assertEquals(
-			'SELECT EXISTS(SELECT 1 FROM virtual_users_fqda WHERE fqda = :username)'
-			, $config->getQueryUserExists());
-		self::assertEquals(
-			'INSERT INTO virtual_users (local, domain, password_hash) VALUES (split_part(:username, \'@\', 1), split_part(:username, \'@\', 2), :password_hash)'
-			, $config->getQueryCreateUser());
-	}
+        $actualPassword = $config->getDbPassword();
+        self::assertEquals($expectedPassword, $actualPassword);
+    }
+
+    public function testDBPasswordFromPasswordFileIsReturned()
+    {
+
+        $expectedPassword = 'v_erY-secr3ttt 909!&äßZ';
+
+        $dbPasswordFile = tempnam("/tmp", "user_backend_sql_raw-db_password_file");
+        if ($dbPasswordFile === false) {
+            self::fail("Temporary db password file could not be created.");
+        }
+
+        $file = fopen($dbPasswordFile, "w");
+        if ($file === false) {
+            self::fail("Temporary db password file could not be opened for writing.");
+        }
+
+        fwrite($file, $expectedPassword);
+        fclose($file);
+
+        $this->nextcloudConfigStub->method('getSystemValue')
+            ->willReturn(array(
+                'db_password_file' => $dbPasswordFile,
+            ));
+
+        $config = new Config($this->logStub, $this->nextcloudConfigStub);
+
+        $actualPassword = $config->getDbPassword();
+        unlink($dbPasswordFile);
+        self::assertEquals($expectedPassword, $actualPassword);
+    }
+
+
+    public function testDBPasswordFromPasswordFileIsTrimmed()
+    {
+        $expectedPassword = 'secret';
+
+        $dbPasswordFile = tempnam("/tmp", "user_backend_sql_raw-db_password_file");
+        if ($dbPasswordFile === false) {
+            self::fail("Temporary db password file could not be created.");
+        }
+
+        $file = fopen($dbPasswordFile, "w");
+        if ($file === false) {
+            self::fail("Temporary db password file could not be opened for writing.");
+        }
+
+        // add tab in front and whitespace at the end which will be trimmed
+        fwrite($file, "\t{$expectedPassword} ");
+        fclose($file);
+
+        $this->nextcloudConfigStub->method('getSystemValue')
+            ->willReturn(array(
+                'db_password_file' => $dbPasswordFile,
+            ));
+
+        $config = new Config($this->logStub, $this->nextcloudConfigStub);
+
+        $actualPassword = $config->getDbPassword();
+        unlink($dbPasswordFile);
+        self::assertEquals($expectedPassword, $actualPassword);
+    }
+
+    public function testPasswordFromPasswordFileOverridesPasswordFromConfig()
+    {
+        $passwordFromFile = 'password_from_file';
+        $passwordFromConfig = 'password_from_config';
+
+        $dbPasswordFile = tempnam("/tmp", "user_backend_sql_raw-db_password_file");
+        if ($dbPasswordFile === false) {
+            self::fail("Temporary db password file could not be created.");
+        }
+
+        $file = fopen($dbPasswordFile, "w");
+        if ($file === false) {
+            self::fail("Temporary db password file could not be opened for writing.");
+        }
+
+        fwrite($file, "{$passwordFromFile}");
+        fclose($file);
+
+        $this->nextcloudConfigStub->method('getSystemValue')
+            ->willReturn(array(
+                'db_password' => $passwordFromConfig,
+                'db_password_file' => $dbPasswordFile,
+            ));
+
+        $config = new Config($this->logStub, $this->nextcloudConfigStub);
+
+        $actualPassword = $config->getDbPassword();
+        unlink($dbPasswordFile);
+        self::assertEquals($passwordFromFile, $actualPassword);
+    }
+
+    public function testHashAlgorithmForNewPasswordsIsReturnedWhenThisParameterIsSet()
+    {
+        $this->nextcloudConfigStub->method('getSystemValue')
+            ->willReturn(array(
+                'hash_algorithm_for_new_passwords' => 'SHA-512',
+            ));
+
+        $config = new Config($this->logStub, $this->nextcloudConfigStub);
+
+        $expectedHashAlgorithm = 'sha512';
+        $actualHashAlgorithm = $config->getHashAlgorithmForNewPasswords();
+        self::assertEquals($expectedHashAlgorithm, $actualHashAlgorithm);
+    }
+
+    public function testQueryIsReturnedWhenItIsSet()
+    {
+        $this->nextcloudConfigStub->method('getSystemValue')
+            ->willReturn(array(
+                'queries' => array(
+                    'set_password_hash_for_user' => 'UPDATE virtual_users SET password_hash = :new_password_hash WHERE local = split_part(:username, \'@\', 1) AND domain = split_part(:username, \'@\', 2)',
+                ),
+            ));
+
+        $config = new Config($this->logStub, $this->nextcloudConfigStub);
+
+        $expectedQuery = 'UPDATE virtual_users SET password_hash = :new_password_hash WHERE local = split_part(:username, \'@\', 1) AND domain = split_part(:username, \'@\', 2)';
+        $actualReturnValue = $config->getQuerySetPasswordForUser();
+        self::assertEquals($expectedQuery, $actualReturnValue);
+    }
+
+    // Tests that check whether invalid values for countable types are
+    // recognized
+
+    public function testExceptionIsThrownForUnsupportedHashAlgorithmForNewPasswords()
+    {
+        $this->nextcloudConfigStub->method('getSystemValue')
+            ->willReturn(array(
+                'hash_algorithm_for_new_passwords' => 'des-3',
+            ));
+
+        $this->expectException(\UnexpectedValueException::class);
+        $config = new Config($this->logStub, $this->nextcloudConfigStub);
+        $config->getHashAlgorithmForNewPasswords();
+    }
+
+    // Test that checks if multiple parameters are recognized simultaneously.
+    // Previous tests only tested single parameters.
+    public function testMultipleParametersAreRecognizedSimultaneously()
+    {
+        $expectedDsn = 'pgsql:host=/var/run/postgresql;dbname=theName_OfYourUserDb';
+        $expectedPassword = '!me SoSec35?äöß1';
+        $this->nextcloudConfigStub->method('getSystemValue')
+            ->willReturn(array(
+                'dsn' => $expectedDsn,
+                'db_password' => $expectedPassword,
+                'queries' => array(
+                    'user_exists' => 'SELECT EXISTS(SELECT 1 FROM virtual_users_fqda WHERE fqda = :username)',
+                    'create_user' => 'INSERT INTO virtual_users (local, domain, password_hash) VALUES (split_part(:username, \'@\', 1), split_part(:username, \'@\', 2), :password_hash)',
+                ),
+                'hash_algorithm_for_new_passwords' => 'argon2i',
+            ));
+
+        $config = new Config($this->logStub, $this->nextcloudConfigStub);
+
+        self::assertEquals($expectedDsn, $config->getDsn());
+        self::assertEquals($expectedPassword, $config->getDbPassword());
+        self::assertEquals(
+            'SELECT EXISTS(SELECT 1 FROM virtual_users_fqda WHERE fqda = :username)'
+            , $config->getQueryUserExists());
+        self::assertEquals(
+            'INSERT INTO virtual_users (local, domain, password_hash) VALUES (split_part(:username, \'@\', 1), split_part(:username, \'@\', 2), :password_hash)'
+            , $config->getQueryCreateUser());
+    }
 }

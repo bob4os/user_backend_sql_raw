@@ -21,372 +21,397 @@
 
 namespace OCA\UserBackendSqlRaw;
 
-use Psr\Log\LoggerInterface;
 use OC\User\Backend;
 use OCP\User\Backend\IGetRealUIDBackend;
+use Psr\Log\LoggerInterface;
 
-class UserBackend implements \OCP\IUserBackend, \OCP\UserInterface, \OCP\User\Backend\IGetRealUIDBackend {
+class UserBackend implements \OCP\IUserBackend, \OCP\UserInterface, \OCP\User\Backend\IGetRealUIDBackend
+
+{
 
     /** @var LoggerInterface */
-	private $logger;
-	private $config;
-	private $db;
+    private $logger;
+    private $config;
+    private $db;
 
-	public function __construct(LoggerInterface $logger, Config $config, Db $db) {
-		$this->logger = $logger;
-		$this->config = $config;
-		// Don't get db handle (dbo object) here yet, so that it is only created
-		// when db queries are actually run.
-		$this->db = $db;
-	}
+    public function __construct(LoggerInterface $logger, Config $config, Db $db)
+    {
+        $this->logger = $logger;
+        $this->config = $config;
+        // Don't get db handle (dbo object) here yet, so that it is only created
+        // when db queries are actually run.
+        $this->db = $db;
+    }
 
-	public function getBackendName() {
-		return 'SQL raw';
-	}
+    public function getBackendName()
+    {
+        return 'SQL raw';
+    }
 
-	public function implementsActions($actions) {
+    public function implementsActions($actions)
+    {
 
-		return (bool)((
-				(!empty($this->config->getQueryCreateUser()) ? Backend::CREATE_USER : 0)
-				| (!empty($this->config->getQuerySetPasswordForUser()) ? Backend::SET_PASSWORD : 0)
-				| ($this->queriesForUserLoginAreSet() ? Backend::CHECK_PASSWORD : 0)
-				| (!empty($this->config->getQueryGetHome()) ? Backend::GET_HOME : 0)
-				| (!empty($this->config->getQueryGetDisplayName()) ? Backend::GET_DISPLAYNAME : 0)
-				| (!empty($this->config->getQuerySetDisplayName()) ? Backend::SET_DISPLAYNAME : 0)
-				| (!empty($this->config->getQueryCountUsers()) ? Backend::COUNT_USERS : 0)
-			) & $actions);
-	}
+        return (bool) ((
+            (!empty($this->config->getQueryCreateUser()) ? Backend::CREATE_USER : 0)
+             | (!empty($this->config->getQuerySetPasswordForUser()) ? Backend::SET_PASSWORD : 0)
+             | ($this->queriesForUserLoginAreSet() ? Backend::CHECK_PASSWORD : 0)
+             | (!empty($this->config->getQueryGetHome()) ? Backend::GET_HOME : 0)
+             | (!empty($this->config->getQueryGetDisplayName()) ? Backend::GET_DISPLAYNAME : 0)
+             | (!empty($this->config->getQuerySetDisplayName()) ? Backend::SET_DISPLAYNAME : 0)
+             | (!empty($this->config->getQueryCountUsers()) ? Backend::COUNT_USERS : 0)
+        ) & $actions);
+    }
 
-	/**
-	 * Checks provided login name and password against the database. This method
-	 * is not part of \OCP\UserInterface but is called by Manager.php of
-	 * Nextcloud if Backend::CHECK_PASSWORD is set.
-	 * @param $providedUsername
-	 * @param $providedPassword
-	 * @return bool whether the provided password was correct for provided user
-	 */
-	public function checkPassword($providedUsername, $providedPassword) {
-		// prevent denial of service
-		if (strlen($providedPassword) > Config::MAXIMUM_ALLOWED_PASSWORD_LENGTH) {
-			return FALSE;
-		}
+    /**
+     * Checks provided login name and password against the database. This method
+     * is not part of \OCP\UserInterface but is called by Manager.php of
+     * Nextcloud if Backend::CHECK_PASSWORD is set.
+     * @param $providedUsername
+     * @param $providedPassword
+     * @return bool whether the provided password was correct for provided user
+     */
+    public function checkPassword($providedUsername, $providedPassword)
+    {
+        // prevent denial of service
+        if (strlen($providedPassword) > Config::MAXIMUM_ALLOWED_PASSWORD_LENGTH) {
+            return false;
+        }
 
-		$dbHandle = $this->db->getDbHandle();
+        $dbHandle = $this->db->getDbHandle();
 
-		$statement = $dbHandle->prepare($this->config->getQueryGetPasswordHashForUser());
-		$statement->execute(['username' => $providedUsername]);
-		$retrievedPasswordHash = $statement->fetchColumn();
+        $statement = $dbHandle->prepare($this->config->getQueryGetPasswordHashForUser());
+        $statement->execute(['username' => $providedUsername]);
+        $retrievedPasswordHash = $statement->fetchColumn();
 
-		if ($retrievedPasswordHash === FALSE) {
-			return FALSE;
-		}
+        if ($retrievedPasswordHash === false) {
+            return false;
+        }
 
-		if (password_verify($providedPassword, $retrievedPasswordHash)) {
-			return $providedUsername;
-		} else {
-			return FALSE;
-		}
-	}
+        if (password_verify($providedPassword, $retrievedPasswordHash)) {
+            return $providedUsername;
+        } else {
+            return false;
+        }
+    }
 
-	public function deleteUser($providedUsername) {
-		$statement = $this->db->getDbHandle()->prepare($this->config->getQueryDeleteUser());
-		$wasUserDeleted = $this->executeOrCatchExceptionAndReturnFalse($statement, ['username' => $providedUsername]);
-		return $wasUserDeleted;
-	}
+    public function deleteUser($providedUsername)
+    {
+        $statement = $this->db->getDbHandle()->prepare($this->config->getQueryDeleteUser());
+        $wasUserDeleted = $this->executeOrCatchExceptionAndReturnFalse($statement, ['username' => $providedUsername]);
+        return $wasUserDeleted;
+    }
 
-	public function getUsers($searchString = '', $limit = null, $offset = null, $wildcard = true) {
-		// If the search string contains % or _ these would be interpreted as
-		// wildcards in the LIKE expression. Therefore they will be escaped.
-		$searchString = $this->escapePercentAndUnderscore($searchString);
-		
-		$queryFromConfig = $this->config->getQueryGetUsers();
-		isset($limit) ? $limitSegment = ' LIMIT :limit' : $limitSegment = '';
-		isset($offset) ? $offsetSegment = ' OFFSET :offset' : $offsetSegment = '';
-		$finalQuery = $queryFromConfig . $limitSegment . $offsetSegment;
-		
-		$statement = $this->db->getDbHandle()->prepare($finalQuery);
-		
-		// Because MariaDB can not handle string parameters for LIMIT/OFFSET we have to bind the
-		// values "manually" instead of passing an array to execute(). This is another instance of
-		// MariaDB making the code "uglier".
-		$statement->bindValue(':search', ($wildcard ? '%' : '') . $searchString . ($wildcard ? '%' : ''), \PDO::PARAM_STR);
-		if (isset($limit)) {
-			$statement->bindValue(':limit', intval($limit), \PDO::PARAM_INT);
-		}
-		if (isset($offset))  {
-			$statement->bindValue(':offset', intval($offset), \PDO::PARAM_INT);
-		}
-		$statement->execute();
-		
-		// Setting the second parameter to 0 will ensure, that only the first
-		// column is returned.
-		$matchedUsers = $statement->fetchAll(\PDO::FETCH_COLUMN, 0);
-		return $matchedUsers;
-	}
+    public function getUsers($searchString = '', $limit = null, $offset = null, $wildcard = true)
+    {
+        // If the search string contains % or _ these would be interpreted as
+        // wildcards in the LIKE expression. Therefore they will be escaped.
+        $searchString = $this->escapePercentAndUnderscore($searchString);
 
-	public function userExists($providedUsername) {
-		$statement = $this->db->getDbHandle()->prepare($this->config->getQueryUserExists());
-		$statement->execute(['username' => $providedUsername]);
-		$doesUserExist = $statement->fetchColumn();
-		return $doesUserExist;
-	}
+        $queryFromConfig = $this->config->getQueryGetUsers();
+        isset($limit) ? $limitSegment = ' LIMIT :limit' : $limitSegment = '';
+        isset($offset) ? $offsetSegment = ' OFFSET :offset' : $offsetSegment = '';
+        $finalQuery = $queryFromConfig . $limitSegment . $offsetSegment;
 
-	public function getDisplayName($providedUsername) {
-		$statement = $this->db->getDbHandle()->prepare($this->config->getQueryGetDisplayName());
-		$statement->execute(['username' => $providedUsername]);
-		$retrievedDisplayName = $statement->fetchColumn();
-		return $retrievedDisplayName;
-	}
+        $statement = $this->db->getDbHandle()->prepare($finalQuery);
 
-	public function getDisplayNames($search = '', $limit = null, $offset = null) {
-		$matchedUsers = $this->getUsers($search, $limit, $offset, true);
-		$displayNames = array();
-		foreach ($matchedUsers as $matchedUser) {
-			$displayNames[$matchedUser] = $this->getDisplayName($matchedUser);
-		}
-		return $displayNames;
-	}
+        // Because MariaDB can not handle string parameters for LIMIT/OFFSET we have to bind the
+        // values "manually" instead of passing an array to execute(). This is another instance of
+        // MariaDB making the code "uglier".
+        $statement->bindValue(':search', ($wildcard ? '%' : '') . $searchString . ($wildcard ? '%' : ''), \PDO::PARAM_STR);
+        if (isset($limit)) {
+            $statement->bindValue(':limit', intval($limit), \PDO::PARAM_INT);
+        }
+        if (isset($offset)) {
+            $statement->bindValue(':offset', intval($offset), \PDO::PARAM_INT);
+        }
+        $statement->execute();
 
-	public function setDisplayName($username, $newDisplayName) {
-		$statement = $this->db->getDbHandle()->prepare($this->config->getQuerySetDisplayName());
-		$parameterSubstitutions = [
-			':username' => $username,
-			':new_display_name' => $newDisplayName
-		];
+        // Setting the second parameter to 0 will ensure, that only the first
+        // column is returned.
+        $matchedUsers = $statement->fetchAll(\PDO::FETCH_COLUMN, 0);
+        return $matchedUsers;
 
-		$dbUpdateWasSuccessful =
-			$this->executeOrCatchExceptionAndReturnFalse($statement, $parameterSubstitutions);
+    }
 
-		if ($dbUpdateWasSuccessful) {
-			return TRUE;
-		} else {
-			$this->logger->error('Setting a new display name for username \''
-				. $username . '\' failed, because the db update failed.');
-			return FALSE;
-		}
-	}
+    public function userExists($providedUsername)
+    {
+        $statement = $this->db->getDbHandle()->prepare($this->config->getQueryUserExists());
+        $statement->execute(['username' => $providedUsername]);
+        $doesUserExist = $statement->fetchColumn();
+        return $doesUserExist;
+    }
 
-	public function hasUserListings() {
-		// There is no documentation or example code that actually uses this
-		// method. It is assumed that listing is available if users can be
-		// searched for without specifying any filters.
-		return !empty($this->config->getQueryGetUsers());
-	}
+    public function getDisplayName($providedUsername)
+    {
+        $statement = $this->db->getDbHandle()->prepare($this->config->getQueryGetDisplayName());
+        $statement->execute(['username' => $providedUsername]);
+        $retrievedDisplayName = $statement->fetchColumn();
+        return $retrievedDisplayName;
+    }
 
-	public function setPassword($username, $newPassword) {
-		// prevent denial of service
-		if (strlen($newPassword) > Config::MAXIMUM_ALLOWED_PASSWORD_LENGTH) {
-			$this->logPasswordLengthError($username);
-			return FALSE;
-		}
+    public function getDisplayNames($search = '', $limit = null, $offset = null)
+    {
+        $matchedUsers = $this->getUsers($search, $limit, $offset, true);
+        $displayNames = array();
+        foreach ($matchedUsers as $matchedUser) {
+            $displayNames[$matchedUser] = $this->getDisplayName($matchedUser);
+        }
+        return $displayNames;
+    }
 
-		if (!$this->userExists($username)) {
-			return FALSE;
-		}
+    public function setDisplayName($username, $newDisplayName)
+    {
+        $statement = $this->db->getDbHandle()->prepare($this->config->getQuerySetDisplayName());
+        $parameterSubstitutions = [
+            ':username' => $username,
+            ':new_display_name' => $newDisplayName,
+        ];
 
-		$newPasswordHash = $this->hashPassword($newPassword);
-		if ($newPasswordHash === FALSE) {
-			$this->logger->critical('Setting a new password failed,'
-				. ' because the hashing function \''
-				. $this->config->getHashAlgorithmForNewPasswords()
-				. '\' failed.');
-			return FALSE;
-		}
+        $dbUpdateWasSuccessful =
+        $this->executeOrCatchExceptionAndReturnFalse($statement, $parameterSubstitutions);
 
-		$dbHandle = $this->db->getDbHandle();
-		// Don't throw exceptions on db errors because this could leak passwords
-		// to logs.
-		$dbHandle->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_SILENT);
-		$statement = $dbHandle->prepare($this->config->getQuerySetPasswordForUser());
+        if ($dbUpdateWasSuccessful) {
+            return true;
+        } else {
+            $this->logger->error('Setting a new display name for username \''
+                . $username . '\' failed, because the db update failed.');
+            return false;
+        }
+    }
 
-		$parameterSubstitutions = [
-			':username' => $username,
-			':new_password_hash' => $this->hashPassword($newPassword)];
+    public function hasUserListings()
+    {
+        // There is no documentation or example code that actually uses this
+        // method. It is assumed that listing is available if users can be
+        // searched for without specifying any filters.
+        return !empty($this->config->getQueryGetUsers());
+    }
 
-		$dbUpdateWasSuccessful =
-			$this->executeOrCatchExceptionAndReturnFalse($statement, $parameterSubstitutions);
+    public function setPassword($username, $newPassword)
+    {
+        // prevent denial of service
+        if (strlen($newPassword) > Config::MAXIMUM_ALLOWED_PASSWORD_LENGTH) {
+            $this->logPasswordLengthError($username);
+            return false;
+        }
 
-		if ($dbUpdateWasSuccessful) {
-			return TRUE;
-		} else {
-			$this->logger->error('Setting a new password for username \'' . $username
-				. '\' failed, because the db update failed.');
-			return FALSE;
-		}
-	}
+        if (!$this->userExists($username)) {
+            return false;
+        }
 
-	public function countUsers() {
-		$statement = $this->db->getDbHandle()->query($this->config->getQueryCountUsers());
-		$userCount = $statement->fetchColumn();
-		return $userCount;
-	}
+        $newPasswordHash = $this->hashPassword($newPassword);
+        if ($newPasswordHash === false) {
+            $this->logger->critical('Setting a new password failed,'
+                . ' because the hashing function \''
+                . $this->config->getHashAlgorithmForNewPasswords()
+                . '\' failed.');
+            return false;
+        }
 
-	public function getHome($providedUsername) {
-		$statement = $this->db->getDbHandle()->prepare($this->config->getQueryGetHome());
-		$statement->execute(['username' => $providedUsername]);
-		$retrievedHome = $statement->fetchColumn();
-		return $retrievedHome;
-	}
+        $dbHandle = $this->db->getDbHandle();
+        // Don't throw exceptions on db errors because this could leak passwords
+        // to logs.
+        $dbHandle->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_SILENT);
+        $statement = $dbHandle->prepare($this->config->getQuerySetPasswordForUser());
 
+        $parameterSubstitutions = [
+            ':username' => $username,
+            ':new_password_hash' => $this->hashPassword($newPassword)];
 
-	public function createUser($providedUsername, $providedPassword) {
-		// prevent denial of service
-		if (strlen($providedPassword) > Config::MAXIMUM_ALLOWED_PASSWORD_LENGTH) {
-			$this->logPasswordLengthError($providedUsername);
-			return FALSE;
-		}
+        $dbUpdateWasSuccessful =
+        $this->executeOrCatchExceptionAndReturnFalse($statement, $parameterSubstitutions);
 
-		$dbHandle = $this->db->getDbHandle();
+        if ($dbUpdateWasSuccessful) {
+            return true;
+        } else {
+            $this->logger->error('Setting a new password for username \'' . $username
+                . '\' failed, because the db update failed.');
+            return false;
+        }
+    }
 
-		$statement = $dbHandle->prepare($this->config->getQueryCreateUser());
-		$dbUpdateWasSuccessful = $this->executeOrCatchExceptionAndReturnFalse($statement, [
-			':username' => $providedUsername,
-			':password_hash' => $this->hashPassword($providedPassword)]);
+    public function countUsers()
+    {
+        $statement = $this->db->getDbHandle()->query($this->config->getQueryCountUsers());
+        $userCount = $statement->fetchColumn();
+        return $userCount;
+    }
 
-		if ($dbUpdateWasSuccessful) {
-			return TRUE;
-		} else {
-			$this->logger->error('Creating the user with username \''
-				. $providedUsername . '\' failed, because the db update failed.');
-			return FALSE;
+    public function getHome($providedUsername)
+    {
+        $statement = $this->db->getDbHandle()->prepare($this->config->getQueryGetHome());
+        $statement->execute(['username' => $providedUsername]);
+        $retrievedHome = $statement->fetchColumn();
+        return $retrievedHome;
+    }
 
-		}
-	}
+    public function createUser($providedUsername, $providedPassword)
+    {
+        // prevent denial of service
+        if (strlen($providedPassword) > Config::MAXIMUM_ALLOWED_PASSWORD_LENGTH) {
+            $this->logPasswordLengthError($providedUsername);
+            return false;
+        }
 
-	/**
-	 * Escape % and _ with \.
-	 *
-	 * @param $input string the input that will be escaped
-	 * @return string input string with % and _ escaped
-	 */
-	private function escapePercentAndUnderscore($input) {
-		return str_replace('%', '\\%', str_replace('_', '\\_', $input));
-	}
+        $dbHandle = $this->db->getDbHandle();
 
-	/**
-	 * @return bool whether configuration contains a query for getting a
-	 * password hash and a query to check if a user exists
-	 */
-	private function queriesForUserLoginAreSet() {
-		return (!empty($this->config->getQueryGetPasswordHashForUser())
-			&& !empty($this->config->getQueryUserExists()));
-	}
+        $statement = $dbHandle->prepare($this->config->getQueryCreateUser());
+        $dbUpdateWasSuccessful = $this->executeOrCatchExceptionAndReturnFalse($statement, [
+            ':username' => $providedUsername,
+            ':password_hash' => $this->hashPassword($providedPassword)]);
 
-	/**
-	 * @param $password string the password to hash
-	 * @return bool|string hashed password or FALSE on failure
-	 */
-	private function hashPassword($password) {
-		$algorithmFromConfig = $this->config->getHashAlgorithmForNewPasswords();
-		$hashedPassword = FALSE;
+        if ($dbUpdateWasSuccessful) {
+            return true;
+        } else {
+            $this->logger->error('Creating the user with username \''
+                . $providedUsername . '\' failed, because the db update failed.');
+            return false;
 
-		// default algorithm is bcrypt
-		if ($algorithmFromConfig === 'bcrypt' || empty($algorithmFromConfig)) {
-			$hashedPassword = $this->hashWithModernMethod($password, PASSWORD_BCRYPT);
-		} elseif ($algorithmFromConfig === 'argon2i') {
-			$hashedPassword = $this->hashWithModernMethod($password, PASSWORD_ARGON2I);
-		} elseif ($algorithmFromConfig === 'argon2id') {
-			$hashedPassword = $this->hashWithModernMethod($password, PASSWORD_ARGON2ID);
-		} elseif ($algorithmFromConfig === 'sha512'
-			|| $algorithmFromConfig === 'sha256'
-			|| $algorithmFromConfig === 'md5') {
-			$hashedPassword = $this->hashWithOldMethod($password, $algorithmFromConfig);
-		}
-		return $hashedPassword;
-	}
+        }
+    }
 
-	/**
-	 * Creates password with the modern password_hash() method. Supports Bcrypt, Argon2i
-	 * and Argon2id
-	 * @param $password string the password to hash
-	 * @param $algorithm int the algorithm to use for hashing the password
-	 * @return bool|string the hashed password or FALSE on failure
-	 */
-	private function hashWithModernMethod($password, $algorithm) {
-		$hashedPassword = password_hash($password, $algorithm);
-		// Contrary to password_hash's documentation it also returns null if
-		// an algorithm is not supported.
-		if (is_null($hashedPassword)) {
-			return FALSE;
-		}
-		return $hashedPassword;
-	}
+    /**
+     * Escape % and _ with \.
+     *
+     * @param $input string the input that will be escaped
+     * @return string input string with % and _ escaped
+     */
+    private function escapePercentAndUnderscore($input)
+    {
+        return str_replace('%', '\\%', str_replace('_', '\\_', $input));
+    }
 
-	/**
-	 * Creates hashes using MD5-CRYPT, SHA-256-CRYPT or SHA-512-CRYPT using the
-	 * the older method with "manual" creation of a salt.
-	 * @param $password string the password to hash
-	 * @param $algorithm string the algorithm to use for hashing the password
-	 * @return bool|string the hashed password or FALSE on failure
-	 */
-	private function hashWithOldMethod($password, $algorithm) {
-		$salt = base64_encode(random_bytes(8));
-		$hashedPassword = FALSE;
+    /**
+     * @return bool whether configuration contains a query for getting a
+     * password hash and a query to check if a user exists
+     */
+    private function queriesForUserLoginAreSet()
+    {
+        return (!empty($this->config->getQueryGetPasswordHashForUser())
+            && !empty($this->config->getQueryUserExists()));
+    }
 
-		if ($algorithm === 'sha512') {
-			$hashedPassword = crypt($password, '$6$' . $salt . '$');
-		} elseif ($algorithm === 'sha256') {
-			$hashedPassword = crypt($password, '$5$' . $salt . '$');
-		} elseif ($algorithm === 'md5') {
-			$hashedPassword = crypt($password, '$1$' . $salt . '$');
-		}
+    /**
+     * @param $password string the password to hash
+     * @return bool|string hashed password or FALSE on failure
+     */
+    private function hashPassword($password)
+    {
+        $algorithmFromConfig = $this->config->getHashAlgorithmForNewPasswords();
+        $hashedPassword = false;
 
-		// If crypt() fails the returned string will be shorter than 13
-		// characters, see http://php.net/manual/en/function.crypt.php.
-		if (strlen($hashedPassword) < 13) {
-			return FALSE;
-		}
-		return $hashedPassword;
-	}
+        // default algorithm is bcrypt
+        if ($algorithmFromConfig === 'bcrypt' || empty($algorithmFromConfig)) {
+            $hashedPassword = $this->hashWithModernMethod($password, PASSWORD_BCRYPT);
+        } elseif ($algorithmFromConfig === 'argon2i') {
+            $hashedPassword = $this->hashWithModernMethod($password, PASSWORD_ARGON2I);
+        } elseif ($algorithmFromConfig === 'argon2id') {
+            $hashedPassword = $this->hashWithModernMethod($password, PASSWORD_ARGON2ID);
+        } elseif ($algorithmFromConfig === 'sha512'
+            || $algorithmFromConfig === 'sha256'
+            || $algorithmFromConfig === 'md5') {
+            $hashedPassword = $this->hashWithOldMethod($password, $algorithmFromConfig);
+        }
+        return $hashedPassword;
+    }
 
-	/**
-	 * Helper function that catches SQL exceptions for methods that should return FALSE on failure.
-	 * If exception is not caught here, it bubbles up to Nextcloud's dispatcher and the user manager
-	 * is not aware that a user backend method failed.
-	 *
-	 * @param \PDOStatement $pdoStatement the statement to execute
-	 * @param array $parameterSubstitutions the substitution parameters
-	 *
-	 * @return bool|\PDOStatement
-	 */
-	private function executeOrCatchExceptionAndReturnFalse(\PDOStatement $pdoStatement, array $parameterSubstitutions) {
-		try {
-			$pdoStatement->execute($parameterSubstitutions);
-		} catch (\PDOException $exception) {
-			$this->logger->error('A SQL error occurred during a user_backend_sql_raw operation. '
-			. 'See SQLSTATE exception above for details.'
-			, ['exception' => $exception]);
-			return FALSE;
-		}
-		return $pdoStatement;
-	}
+    /**
+     * Creates password with the modern password_hash() method. Supports Bcrypt, Argon2i
+     * and Argon2id
+     * @param $password string the password to hash
+     * @param $algorithm int the algorithm to use for hashing the password
+     * @return bool|string the hashed password or FALSE on failure
+     */
+    private function hashWithModernMethod($password, $algorithm)
+    {
+        $hashedPassword = password_hash($password, $algorithm);
+        // Contrary to password_hash's documentation it also returns null if
+        // an algorithm is not supported.
+        if (is_null($hashedPassword)) {
+            return false;
+        }
+        return $hashedPassword;
+    }
 
-	/**
-	 * Because this error is logged in two places, the lengthy error message is unified here.
-	 * @param $username string username to mention in the error log
-	 */
-	private function logPasswordLengthError(string $username): void {
-		$this->logger->error('Setting a new password for user \'' . $username
-			. '\' was rejected because it is longer than ' . Config::MAXIMUM_ALLOWED_PASSWORD_LENGTH
-			. ' characters. This is to prevent denial of service attacks against the server.');
-	}
+    /**
+     * Creates hashes using MD5-CRYPT, SHA-256-CRYPT or SHA-512-CRYPT using the
+     * the older method with "manual" creation of a salt.
+     * @param $password string the password to hash
+     * @param $algorithm string the algorithm to use for hashing the password
+     * @return bool|string the hashed password or FALSE on failure
+     */
+    private function hashWithOldMethod($password, $algorithm)
+    {
+        $salt = base64_encode(random_bytes(8));
+        $hashedPassword = false;
 
-        /**
-         * Some backends accept different UIDs than what is the internal UID to be used.
-         * For example the database backend accepts differnt cased UIDs in all the functions
-         * but the internal UID that is to be used should be correctly cased.
-         *
-         * This little function makes sure that the used UID will be correct when using the user object
-         *
-         * @param string $uid
-         * @return string
-         */
-	public function getRealUID(string $uid): string {
-		if (!$this->userExists($uid)) {
-			throw new \RuntimeException($uid . ' does not exist');
-		}
+        if ($algorithm === 'sha512') {
+            $hashedPassword = crypt($password, '$6$' . $salt . '$');
+        } elseif ($algorithm === 'sha256') {
+            $hashedPassword = crypt($password, '$5$' . $salt . '$');
+        } elseif ($algorithm === 'md5') {
+            $hashedPassword = crypt($password, '$1$' . $salt . '$');
+        }
 
-		$realUID = $this->getUsers($uid, 1, null, false);
-		return array_pop($realUID);
-	}
+        // If crypt() fails the returned string will be shorter than 13
+        // characters, see http://php.net/manual/en/function.crypt.php.
+        if (strlen($hashedPassword) < 13) {
+            return false;
+        }
+        return $hashedPassword;
+    }
+
+    /**
+     * Helper function that catches SQL exceptions for methods that should return FALSE on failure.
+     * If exception is not caught here, it bubbles up to Nextcloud's dispatcher and the user manager
+     * is not aware that a user backend method failed.
+     *
+     * @param \PDOStatement $pdoStatement the statement to execute
+     * @param array $parameterSubstitutions the substitution parameters
+     *
+     * @return bool|\PDOStatement
+     */
+    private function executeOrCatchExceptionAndReturnFalse(\PDOStatement $pdoStatement, array $parameterSubstitutions)
+    {
+        try {
+            $pdoStatement->execute($parameterSubstitutions);
+        } catch (\PDOException $exception) {
+            $this->logger->error('A SQL error occurred during a user_backend_sql_raw operation. '
+                . 'See SQLSTATE exception above for details.'
+                , ['exception' => $exception]);
+            return false;
+        }
+        return $pdoStatement;
+    }
+
+    /**
+     * Because this error is logged in two places, the lengthy error message is unified here.
+     * @param $username string username to mention in the error log
+     */
+    private function logPasswordLengthError(string $username): void
+    {
+        $this->logger->error('Setting a new password for user \'' . $username
+            . '\' was rejected because it is longer than ' . Config::MAXIMUM_ALLOWED_PASSWORD_LENGTH
+            . ' characters. This is to prevent denial of service attacks against the server.');
+    }
+
+    /**
+     * Some backends accept different UIDs than what is the internal UID to be used.
+     * For example the database backend accepts differnt cased UIDs in all the functions
+     * but the internal UID that is to be used should be correctly cased.
+     *
+     * This little function makes sure that the used UID will be correct when using the user object
+     *
+     * @param string $uid
+     * @return string
+     */
+    public function getRealUID(string $uid): string
+    {
+        if (!$this->userExists($uid)) {
+            throw new \RuntimeException($uid . ' does not exist');
+        }
+
+        $realUID = $this->getUsers($uid, 1, null, true);
+        return array_pop($realUID);
+    }
 }

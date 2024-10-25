@@ -23,9 +23,11 @@
 			"OCA\\UserBackendSqlRaw\\Tests\\": "tests/"
 		}
 	},
-	"require": {},
+	"require": {
+		"php": ">=8.0"
+	},
 	"require-dev": {
-		"php": "^7.2",
+		"php": ">=8.0",
 		"phpunit/phpunit": "^9"
 	}
 }
